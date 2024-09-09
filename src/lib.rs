@@ -846,6 +846,8 @@ impl Config {
 
             library.statik = statik;
 
+            println!("cargo:warning=libs {:?}", library.libs);
+            println!("cargo:warning=link {:?}", library.link_paths);
             libraries.add(name, library);
         }
         Ok(libraries)
@@ -1254,6 +1256,7 @@ impl BuildFlags {
 impl fmt::Display for BuildFlags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for flag in self.0.iter() {
+            println!("cargo:warning={}", flag);
             writeln!(f, "cargo:{}", flag)?;
         }
         Ok(())
