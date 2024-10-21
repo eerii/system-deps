@@ -25,6 +25,7 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 version-compare = "0.2"
 heck = "0.5"
 cfg-expr = { version = "0.17", features = ["targets"] }
+system-deps-env = { path = "./env" }
 
 [dev-dependencies]
 lazy_static = "1"
