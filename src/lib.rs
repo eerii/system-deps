@@ -251,11 +251,6 @@ pub enum Error {
     BuildInternalWrongVersion(String, String, String),
     /// The `cfg()` expression used in `Cargo.toml` is currently not supported
     UnsupportedCfg(String),
-    /// Raised when trying to download binaries for a library by setting `SYSTEM_DEPS_$NAME_BINARY_URL`
-    /// or `SYSTEM_DEPS_BINARY_URL`, without providing `SYSTEM_DEPS_BINARY_DIR`. This should be
-    /// handled automatically by `system-deps-env` `build.rs`. If the dependency has been
-    /// overriden, it needs to provide this variable.
-    MissingBinaryDir(Option<String>),
 }
 
 impl From<pkg_config::Error> for Error {
@@ -300,14 +295,6 @@ impl fmt::Display for Error {
                 s1, s2, s3
             ),
             Self::UnsupportedCfg(s) => write!(f, "Unsupported cfg() expression: {}", s),
-            Self::MissingBinaryDir(s) => write!(
-                f,
-                "Trying to download binaries because {} was set, but not providing {}.\n\
-                 This should be handled automatically by the build script in 'system-deps-env'.\n\
-                 If the dependency has been overriden, you need to provide this variable manually.",
-                EnvVariable::new_binary_url(s.as_deref()),
-                EnvVariable::BinaryDir,
-            ),
         }
     }
 }
@@ -505,6 +492,9 @@ impl Dependencies {
         flags.add(BuildFlag::RerunIfEnvChanged(
             EnvVariable::new_build_internal(None),
         ));
+        flags.add(BuildFlag::RerunIfEnvChanged(
+            EnvVariable::new_pkg_config_path(None),
+        ));
         flags.add(BuildFlag::RerunIfEnvChanged(EnvVariable::new_link(None)));
 
         for (name, _lib) in self.libs.iter() {
@@ -569,11 +559,10 @@ enum EnvVariable {
     SearchFramework(String),
     Include(String),
     NoPkgConfig(String),
+    PkgConfigPath(Option<String>),
     BuildInternal(Option<String>),
     Link(Option<String>),
     LinkerArgs(String),
-    BinaryUrl(Option<String>),
-    BinaryDir,
 }
 
 impl EnvVariable {
@@ -605,16 +594,16 @@ impl EnvVariable {
         Self::NoPkgConfig(lib.to_string())
     }
 
+    fn new_pkg_config_path(lib: Option<&str>) -> Self {
+        Self::PkgConfigPath(lib.map(|l| l.to_string()))
+    }
+
     fn new_build_internal(lib: Option<&str>) -> Self {
         Self::BuildInternal(lib.map(|l| l.to_string()))
     }
 
     fn new_link(lib: Option<&str>) -> Self {
         Self::Link(lib.map(|l| l.to_string()))
-    }
-
-    fn new_binary_url(lib: Option<&str>) -> Self {
-        Self::BinaryUrl(lib.map(|l| l.to_string()))
     }
 
     fn suffix(&self) -> &'static str {
@@ -625,11 +614,10 @@ impl EnvVariable {
             EnvVariable::SearchFramework(_) => "SEARCH_FRAMEWORK",
             EnvVariable::Include(_) => "INCLUDE",
             EnvVariable::NoPkgConfig(_) => "NO_PKG_CONFIG",
+            EnvVariable::PkgConfigPath(_) => "PKG_CONFIG_PATH",
             EnvVariable::BuildInternal(_) => "BUILD_INTERNAL",
             EnvVariable::Link(_) => "LINK",
             EnvVariable::LinkerArgs(_) => "LDFLAGS",
-            EnvVariable::BinaryUrl(_) => "BINARY_URL",
-            EnvVariable::BinaryDir => "BINARY_DIR",
         }
     }
 
@@ -645,10 +633,9 @@ impl EnvVariable {
         add_to_flags(flags, EnvVariable::new_include(name));
         add_to_flags(flags, EnvVariable::new_linker_args(name));
         add_to_flags(flags, EnvVariable::new_no_pkg_config(name));
+        add_to_flags(flags, EnvVariable::new_pkg_config_path(Some(name)));
         add_to_flags(flags, EnvVariable::new_build_internal(Some(name)));
         add_to_flags(flags, EnvVariable::new_link(Some(name)));
-        add_to_flags(flags, EnvVariable::new_binary_url(Some(name)));
-        add_to_flags(flags, EnvVariable::BinaryDir);
     }
 }
 
@@ -662,15 +649,14 @@ impl fmt::Display for EnvVariable {
             | EnvVariable::Include(lib)
             | EnvVariable::LinkerArgs(lib)
             | EnvVariable::NoPkgConfig(lib)
+            | EnvVariable::PkgConfigPath(Some(lib))
             | EnvVariable::BuildInternal(Some(lib))
-            | EnvVariable::Link(Some(lib))
-            | EnvVariable::BinaryUrl(Some(lib)) => {
+            | EnvVariable::Link(Some(lib)) => {
                 format!("{}_{}", lib.to_shouty_snake_case(), self.suffix())
             }
             EnvVariable::BuildInternal(None)
             | EnvVariable::Link(None)
-            | EnvVariable::BinaryUrl(None)
-            | EnvVariable::BinaryDir => self.suffix().to_string(),
+            | EnvVariable::PkgConfigPath(None) => self.suffix().to_string(),
         };
         write!(f, "SYSTEM_DEPS_{}", suffix)
     }
@@ -843,29 +829,18 @@ impl Config {
                 .has_value(&EnvVariable::new_link(Some(name)), "static")
                 || self.env.has_value(&EnvVariable::new_link(None), "static");
 
-            // should we download binaries for the library?
-            let url = self
+            // is there an overrided pkg-config path for the library?
+            let pkg_config_path = self
                 .env
-                .get(&EnvVariable::new_binary_url(Some(name)))
-                .or_else(|| self.env.get(&EnvVariable::new_binary_url(None)));
+                .get(&EnvVariable::new_pkg_config_path(Some(name)))
+                .or_else(|| self.env.get(&EnvVariable::new_pkg_config_path(None)));
 
             let mut library = if self.env.contains(&EnvVariable::new_no_pkg_config(name)) {
                 Library::from_env_variables(name)
             } else if build_internal == BuildInternal::Always {
                 self.call_build_internal(lib_name, version)?
-            } else if let Some(url) = url {
-                // Download lib
-                // Map pkg_config
-                let binary_dir =
-                    self.env
-                        .get(&EnvVariable::BinaryDir)
-                        .ok_or(Error::MissingBinaryDir(
-                            self.env
-                                .get(&EnvVariable::new_binary_url(Some(name)))
-                                .map(|_| name.into()),
-                        ))?;
-                println!("cargo:warning=PATH {} URL {}", binary_dir, url);
-                Library::from_internal_pkg_config(url, lib_name, version)
+            } else if let Some(path) = pkg_config_path {
+                Library::from_internal_pkg_config(path, lib_name, version)
                     .map_err(|e| Error::BuildInternalClosureError(name.into(), e))?
             } else {
                 let mut config = pkg_config::Config::new();
