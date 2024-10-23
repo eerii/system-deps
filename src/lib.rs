@@ -202,6 +202,7 @@
 //! By default all libraries are dynamically linked, except when build internally as [described above](#internally-build-system-libraries).
 //! Libraries can be statically linked by defining the environment variable `SYSTEM_DEPS_$NAME_LINK=static`.
 //! You can also use `SYSTEM_DEPS_LINK=static` to statically link all the libraries.
+//! Additionally, you can use `SYSTEM_DEPS(_$NAME)_LINK=static_release` to link statically only on release builds.
 
 #![deny(missing_docs)]
 
@@ -469,7 +470,7 @@ impl Dependencies {
             lib.libs.iter().for_each(|l| {
                 flags.add(BuildFlag::Lib(
                     l.name.clone(),
-                    lib.statik && l.is_static_available,
+                    lib.statik.get() && l.is_static_available,
                 ))
             });
             lib.frameworks
@@ -823,34 +824,50 @@ impl Config {
             let name = &dep.key;
             let build_internal = self.get_build_internal_status(name)?;
 
-            // should the lib be statically linked?
-            let statik = self
-                .env
-                .has_value(&EnvVariable::new_link(Some(name)), "static")
-                || self.env.has_value(&EnvVariable::new_link(None), "static");
-
             // is there an overrided pkg-config path for the library?
             let pkg_config_path = self
                 .env
                 .get(&EnvVariable::new_pkg_config_path(Some(name)))
                 .or_else(|| self.env.get(&EnvVariable::new_pkg_config_path(None)));
 
+            // should the lib be statically linked?
+            let statik = match self
+                .env
+                .get(&EnvVariable::new_link(Some(name)))
+                .or(self.env.get(&EnvVariable::new_link(None)))
+                .as_deref()
+            {
+                Some("static_release") => StaticLinking::Release,
+                Some(_) => StaticLinking::Always,
+                None => {
+                    if pkg_config_path.is_some() {
+                        StaticLinking::Always
+                    } else {
+                        StaticLinking::Never
+                    }
+                }
+            };
+
             let mut library = if self.env.contains(&EnvVariable::new_no_pkg_config(name)) {
                 Library::from_env_variables(name)
             } else if build_internal == BuildInternal::Always {
                 self.call_build_internal(lib_name, version)?
-            } else if let Some(path) = pkg_config_path {
-                Library::from_internal_pkg_config(path, lib_name, version)
-                    .map_err(|e| Error::BuildInternalClosureError(name.into(), e))?
             } else {
                 let mut config = pkg_config::Config::new();
                 config
                     .print_system_libs(false)
                     .cargo_metadata(false)
                     .range_version(metadata::parse_version(version))
-                    .statik(statik);
+                    .statik(statik.get());
 
-                match Self::probe_with_fallback(config, lib_name, fallback_lib_names) {
+                let probe = if let Some(path) = pkg_config_path {
+                    Library::wrap_pkg_config_dir(path, || config.probe(lib_name))
+                        .map(|lib| (lib_name, lib))
+                } else {
+                    Self::probe_with_fallback(config, lib_name, fallback_lib_names)
+                };
+
+                match probe {
                     Ok((lib_name, lib)) => Library::from_pkg_config(lib_name, lib),
                     Err(e) => {
                         if build_internal == BuildInternal::Auto {
@@ -1006,6 +1023,27 @@ pub enum Source {
     EnvVariables,
 }
 
+#[derive(Debug)]
+/// Should the library be statically linked
+pub enum StaticLinking {
+    /// Always try to link statically. This is the default for internally build libraries.
+    Always,
+    /// Link statically for release builds, and dynamically on debug.
+    Release,
+    /// Always link dynamically. This is the default for regular libraries.
+    Never,
+}
+
+impl StaticLinking {
+    fn get(&self) -> bool {
+        match self {
+            StaticLinking::Always => true,
+            StaticLinking::Release => cfg!(not(debug_assertions)),
+            StaticLinking::Never => false,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 /// Internal library name and if a static library is available on the system
 pub struct InternalLib {
@@ -1048,7 +1086,7 @@ pub struct Library {
     /// library version
     pub version: String,
     /// library is statically linked
-    pub statik: bool,
+    pub statik: StaticLinking,
 }
 
 impl Library {
@@ -1104,7 +1142,7 @@ impl Library {
             framework_paths: l.framework_paths,
             defines: l.defines,
             version: l.version,
-            statik: false,
+            statik: StaticLinking::Never,
         }
     }
 
@@ -1120,8 +1158,36 @@ impl Library {
             framework_paths: Vec::new(),
             defines: HashMap::new(),
             version: String::new(),
-            statik: false,
+            statik: StaticLinking::Never,
         }
+    }
+
+    fn wrap_pkg_config_dir<P, F>(
+        pkg_config_dir: P,
+        f: F,
+    ) -> Result<pkg_config::Library, pkg_config::Error>
+    where
+        P: AsRef<Path>,
+        F: FnOnce() -> Result<pkg_config::Library, pkg_config::Error>,
+    {
+        // save current PKG_CONFIG_PATH, so we can restore it
+        let old = env::var("PKG_CONFIG_PATH");
+
+        match old {
+            Ok(ref s) => {
+                let mut paths = env::split_paths(s).collect::<Vec<_>>();
+                paths.push(PathBuf::from(pkg_config_dir.as_ref()));
+                let paths = env::join_paths(paths).unwrap();
+                env::set_var("PKG_CONFIG_PATH", paths)
+            }
+            Err(_) => env::set_var("PKG_CONFIG_PATH", pkg_config_dir.as_ref()),
+        }
+
+        let res = f();
+
+        env::set_var("PKG_CONFIG_PATH", old.unwrap_or_else(|_| "".into()));
+
+        res
     }
 
     /// Create a `Library` by probing `pkg-config` on an internal directory.
@@ -1154,36 +1220,18 @@ impl Library {
     where
         P: AsRef<Path>,
     {
-        // save current PKG_CONFIG_PATH, so we can restore it
-        let old = env::var("PKG_CONFIG_PATH");
+        let pkg_lib = Self::wrap_pkg_config_dir(pkg_config_dir, || {
+            pkg_config::Config::new()
+                .atleast_version(version)
+                .print_system_libs(false)
+                .cargo_metadata(false)
+                .statik(true)
+                .probe(lib)
+        })?;
 
-        match old {
-            Ok(ref s) => {
-                let mut paths = env::split_paths(s).collect::<Vec<_>>();
-                paths.push(PathBuf::from(pkg_config_dir.as_ref()));
-                let paths = env::join_paths(paths).unwrap();
-                env::set_var("PKG_CONFIG_PATH", paths)
-            }
-            Err(_) => env::set_var("PKG_CONFIG_PATH", pkg_config_dir.as_ref()),
-        }
-
-        let pkg_lib = pkg_config::Config::new()
-            .atleast_version(version)
-            .print_system_libs(false)
-            .cargo_metadata(false)
-            .statik(true)
-            .probe(lib);
-
-        env::set_var("PKG_CONFIG_PATH", old.unwrap_or_else(|_| "".into()));
-
-        match pkg_lib {
-            Ok(pkg_lib) => {
-                let mut lib = Self::from_pkg_config(lib, pkg_lib);
-                lib.statik = true;
-                Ok(lib)
-            }
-            Err(e) => Err(e.into()),
-        }
+        let mut lib = Self::from_pkg_config(lib, pkg_lib);
+        lib.statik = StaticLinking::Always;
+        Ok(lib)
     }
 }
 
