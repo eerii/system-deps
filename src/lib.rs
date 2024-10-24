@@ -170,6 +170,10 @@
 //! One can also define the environment variable `SYSTEM_DEPS_$NAME_NO_PKG_CONFIG` to fully disable `pkg-config` lookup
 //! for the given dependency. In this case at least SYSTEM_DEPS_$NAME_LIB or SYSTEM_DEPS_$NAME_LIB_FRAMEWORK should be defined as well.
 //!
+//! To have control over the `pkg-config` search, the `SYSTEM_DEPS_PKG_CONFIG_PATH` and
+//! `SYSTEM_DEPS_$NAME_PKG_CONFIG_PATH` variables can be provided to add extra directories
+//! to look for dependencies. These have a higher priority than `PKG_CONFIG_PATH`.
+//!
 //! # Internally build system libraries
 //!
 //! `-sys` crates can provide support for building and statically link their underlying system library as part of their build process.
@@ -203,6 +207,15 @@
 //! Libraries can be statically linked by defining the environment variable `SYSTEM_DEPS_$NAME_LINK=static`.
 //! You can also use `SYSTEM_DEPS_LINK=static` to statically link all the libraries.
 //! Additionally, you can use `SYSTEM_DEPS(_$NAME)_LINK=static_release` to link statically only on release builds.
+//!
+//! # Clean the linking line
+//!
+//! By default, system-deps will add all of the linking arguments from `pkg-config` in order for
+//! each separate library. If you are using a large number of libraries, this can result in errors
+//! because the linking line is too long. To aleviate this, the environment variable `SYSTEM_DEPS_CLEAN_LINKER`
+//! can be set, which will deduplicate all of the linking arguments. While a best effort
+//! is made to keep a correct ordering, this can't be guaranteed when using this option, so please
+//! take extra care to verify that the produced result is correct.
 
 #![deny(missing_docs)]
 
@@ -348,12 +361,17 @@ impl Dependencies {
         v
     }
 
-    /// Returns a vector of [Library::libs] of each library, removing duplicates.
-    pub fn all_libs(&self) -> Vec<&str> {
+    /// Returns a vector of [Library::libs] of each library and if they are linked statically, removing duplicates.
+    pub fn all_libs(&self) -> Vec<(&str, bool)> {
         let mut v = self
             .libs
             .values()
-            .flat_map(|l| l.libs.iter().map(|lib| lib.name.as_str()))
+            .flat_map(|l| {
+                let statik = l.statik.get();
+                l.libs
+                    .iter()
+                    .map(move |lib| (lib.name.as_str(), statik && lib.is_static_available))
+            })
             .collect::<Vec<_>>();
         v.sort_unstable();
         v.dedup();
@@ -447,65 +465,58 @@ impl Dependencies {
         }
     }
 
-    fn gen_flags(&self) -> Result<BuildFlags, Error> {
+    fn gen_flags(&self, clean_linker: bool) -> Result<BuildFlags, Error> {
         let mut flags = BuildFlags::new();
         let mut include_paths = Vec::new();
 
-        println!("cargo:warning=linking");
-
-        //for (name, lib) in self.iter() {
-        //    if lib.source == Source::EnvVariables
-        //        && lib.libs.is_empty()
-        //        && lib.frameworks.is_empty()
-        //    {
-        //        return Err(Error::MissingLib(name.to_string()));
-        //    }
-        //}
-        //include_paths = self.all_include_paths();
-        //self.all_link_paths()
-        //    .into_iter()
-        //    .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
-        //self.all_framework_paths()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string())));
-        //self.all_libs_with_static()
-        //    .into_iter()
-        //    .for_each(|(l, s)| flags.add(BuildFlag::Lib(l.to_string(), s)));
-        //self.all_frameworks()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::LibFramework(f.to_string())));
-        //self.all_linker_args()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())));
-
         for (name, lib) in self.iter() {
-            include_paths.extend(lib.include_paths.clone());
-
             if lib.source == Source::EnvVariables
                 && lib.libs.is_empty()
                 && lib.frameworks.is_empty()
             {
                 return Err(Error::MissingLib(name.to_string()));
             }
+        }
 
-            lib.link_paths
-                .iter()
+        if clean_linker {
+            include_paths.extend(self.all_include_paths());
+            self.all_link_paths()
+                .into_iter()
                 .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
-            lib.framework_paths.iter().for_each(|f| {
+            self.all_framework_paths().into_iter().for_each(|f| {
                 flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string()))
             });
-            lib.libs.iter().for_each(|l| {
-                flags.add(BuildFlag::Lib(
-                    l.name.clone(),
-                    lib.statik.get() && l.is_static_available,
-                ))
-            });
-            lib.frameworks
-                .iter()
-                .for_each(|f| flags.add(BuildFlag::LibFramework(f.clone())));
-            lib.ld_args
-                .iter()
-                .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())))
+            self.all_libs()
+                .into_iter()
+                .for_each(|(l, s)| flags.add(BuildFlag::Lib(l.to_string(), s)));
+            self.all_frameworks()
+                .into_iter()
+                .for_each(|f| flags.add(BuildFlag::LibFramework(f.to_string())));
+            self.all_linker_args()
+                .into_iter()
+                .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())));
+        } else {
+            for (_, lib) in self.iter() {
+                include_paths.extend(lib.include_paths.iter());
+                lib.link_paths.iter().for_each(|l| {
+                    flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string()))
+                });
+                lib.framework_paths.iter().for_each(|f| {
+                    flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string()))
+                });
+                lib.libs.iter().for_each(|l| {
+                    flags.add(BuildFlag::Lib(
+                        l.name.clone(),
+                        lib.statik.get() && l.is_static_available,
+                    ))
+                });
+                lib.frameworks
+                    .iter()
+                    .for_each(|f| flags.add(BuildFlag::LibFramework(f.clone())));
+                lib.ld_args
+                    .iter()
+                    .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())))
+            }
         }
 
         // Export DEP_$CRATE_INCLUDE env variable with the headers paths,
@@ -524,12 +535,11 @@ impl Dependencies {
             EnvVariable::new_pkg_config_path(None),
         ));
         flags.add(BuildFlag::RerunIfEnvChanged(EnvVariable::new_link(None)));
+        flags.add(BuildFlag::RerunIfEnvChanged(EnvVariable::CleanLinker));
 
         for (name, _lib) in self.libs.iter() {
             EnvVariable::set_rerun_if_changed_for_all_variants(&mut flags, name);
         }
-
-        println!("cargo:warning=finished linking");
 
         Ok(flags)
     }
@@ -593,6 +603,7 @@ enum EnvVariable {
     BuildInternal(Option<String>),
     Link(Option<String>),
     LinkerArgs(String),
+    CleanLinker,
 }
 
 impl EnvVariable {
@@ -648,6 +659,7 @@ impl EnvVariable {
             EnvVariable::BuildInternal(_) => "BUILD_INTERNAL",
             EnvVariable::Link(_) => "LINK",
             EnvVariable::LinkerArgs(_) => "LDFLAGS",
+            EnvVariable::CleanLinker => "CLEAN_LINKER",
         }
     }
 
@@ -686,7 +698,8 @@ impl fmt::Display for EnvVariable {
             }
             EnvVariable::BuildInternal(None)
             | EnvVariable::Link(None)
-            | EnvVariable::PkgConfigPath(None) => self.suffix().to_string(),
+            | EnvVariable::PkgConfigPath(None)
+            | EnvVariable::CleanLinker => self.suffix().to_string(),
         };
         write!(f, "SYSTEM_DEPS_{}", suffix)
     }
@@ -727,8 +740,9 @@ impl Config {
     ///
     /// The returned hash is using the `toml` key defining the dependency as key.
     pub fn probe(self) -> Result<Dependencies, Error> {
+        let clean_linker = self.env.get(&EnvVariable::CleanLinker).is_some();
         let libraries = self.probe_full()?;
-        let flags = libraries.gen_flags()?;
+        let flags = libraries.gen_flags(clean_linker)?;
 
         // Output cargo flags
         println!("{}", flags);
@@ -763,10 +777,15 @@ impl Config {
         self
     }
 
-    /// TODO
-    pub fn extra_libs(mut self, libs: &[&str]) -> Self {
-        println!("cargo:warning=adding extra libs");
-        self.extra_libs.extend(libs.iter().map(|s| s.to_string()));
+    /// Search and link more libraries than the ones specified in the Cargo.toml.
+    ///
+    /// They will have the same `PKG_CONFIG_PATH` overrides as the parent libraries. It only takes
+    /// effect if the parent library is using pkg-config and is not built internally.
+    ///
+    /// # Arguments
+    /// * `libs`: a list of library names to link.
+    pub fn extra_libs(mut self, libs: Vec<String>) -> Self {
+        self.extra_libs.extend(libs);
         self
     }
 
@@ -896,23 +915,14 @@ impl Config {
                     .range_version(metadata::parse_version(version))
                     .statik(statik.get());
 
-                let probe = if let Some(path) = pkg_config_path {
+                let probe = if let Some(path) = &pkg_config_path {
                     Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(lib_name))
                         .map(|lib| (lib_name, lib))
                 } else {
-                    Self::probe_with_fallback(config, lib_name, fallback_lib_names)
+                    Self::probe_with_fallback(&config, lib_name, fallback_lib_names)
                 };
 
-                //for name in &self.extra_libs {
-                //    let lib = if let Some(path) = &pkg_config_path {
-                //        Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(name))
-                //    } else {
-                //        config.probe(name)
-                //    }?;
-                //    libraries.add(name, Library::from_pkg_config(name, lib));
-                //}
-
-                match probe {
+                let lib = match probe {
                     Ok((lib_name, lib)) => Library::from_pkg_config(lib_name, lib),
                     Err(e) => {
                         if build_internal == BuildInternal::Auto {
@@ -925,7 +935,29 @@ impl Config {
                             return Err(e.into());
                         }
                     }
+                };
+
+                for extra_name in &self.extra_libs {
+                    let lib = if let Some(path) = &pkg_config_path {
+                        Library::wrap_pkg_config_dir(env::split_paths(&path), || {
+                            config.probe(extra_name)
+                        })
+                    } else {
+                        config.probe(extra_name)
+                    };
+
+                    match lib {
+                        Ok(lib) => {
+                            libraries.add(extra_name, Library::from_pkg_config(extra_name, lib))
+                        }
+                        Err(_) => println!(
+                            "cargo:warning=Extra library for '{}' is not available: '{}'",
+                            name, extra_name
+                        ),
+                    };
                 }
+
+                lib
             };
 
             library.statik = statik;
@@ -936,7 +968,7 @@ impl Config {
     }
 
     fn probe_with_fallback<'a>(
-        config: pkg_config::Config,
+        config: &'a pkg_config::Config,
         name: &'a str,
         fallback_names: &'a [String],
     ) -> Result<(&'a str, pkg_config::Library), pkg_config::Error> {
@@ -1215,7 +1247,7 @@ impl Library {
         P: Iterator<Item = PathBuf>,
         F: FnOnce() -> Result<pkg_config::Library, pkg_config::Error>,
     {
-        // save current PKG_CONFIG_PATH, so we can restore it
+        // Save current PKG_CONFIG_PATH, so we can restore it
         let old = env::var("PKG_CONFIG_PATH");
         let old_paths = old.iter().flat_map(env::split_paths);
 
