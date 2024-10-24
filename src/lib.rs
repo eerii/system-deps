@@ -451,6 +451,33 @@ impl Dependencies {
         let mut flags = BuildFlags::new();
         let mut include_paths = Vec::new();
 
+        println!("cargo:warning=linking");
+
+        //for (name, lib) in self.iter() {
+        //    if lib.source == Source::EnvVariables
+        //        && lib.libs.is_empty()
+        //        && lib.frameworks.is_empty()
+        //    {
+        //        return Err(Error::MissingLib(name.to_string()));
+        //    }
+        //}
+        //include_paths = self.all_include_paths();
+        //self.all_link_paths()
+        //    .into_iter()
+        //    .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
+        //self.all_framework_paths()
+        //    .into_iter()
+        //    .for_each(|f| flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string())));
+        //self.all_libs_with_static()
+        //    .into_iter()
+        //    .for_each(|(l, s)| flags.add(BuildFlag::Lib(l.to_string(), s)));
+        //self.all_frameworks()
+        //    .into_iter()
+        //    .for_each(|f| flags.add(BuildFlag::LibFramework(f.to_string())));
+        //self.all_linker_args()
+        //    .into_iter()
+        //    .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())));
+
         for (name, lib) in self.iter() {
             include_paths.extend(lib.include_paths.clone());
 
@@ -501,6 +528,8 @@ impl Dependencies {
         for (name, _lib) in self.libs.iter() {
             EnvVariable::set_rerun_if_changed_for_all_variants(&mut flags, name);
         }
+
+        println!("cargo:warning=finished linking");
 
         Ok(flags)
     }
@@ -670,6 +699,7 @@ type FnBuildInternal =
 pub struct Config {
     env: EnvVariables,
     build_internals: HashMap<String, Box<FnBuildInternal>>,
+    extra_libs: Vec<String>,
 }
 
 impl Default for Config {
@@ -688,6 +718,7 @@ impl Config {
         Self {
             env,
             build_internals: HashMap::new(),
+            extra_libs: Vec::new(),
         }
     }
 
@@ -721,17 +752,22 @@ impl Config {
     /// * `func`: closure called when internally building the library.
     ///
     /// It receives as argument the library name, and the minimum version required.
-    pub fn add_build_internal<F>(self, name: &str, func: F) -> Self
+    pub fn add_build_internal<F>(mut self, name: &str, func: F) -> Self
     where
         F: 'static + FnOnce(&str, &str) -> std::result::Result<Library, BuildInternalClosureError>,
     {
         let mut build_internals = self.build_internals;
         build_internals.insert(name.to_string(), Box::new(func));
 
-        Self {
-            env: self.env,
-            build_internals,
-        }
+        self.build_internals = build_internals;
+        self
+    }
+
+    /// TODO
+    pub fn extra_libs(mut self, libs: &[&str]) -> Self {
+        println!("cargo:warning=adding extra libs");
+        self.extra_libs.extend(libs.iter().map(|s| s.to_string()));
+        self
     }
 
     fn probe_full(mut self) -> Result<Dependencies, Error> {
@@ -861,11 +897,20 @@ impl Config {
                     .statik(statik.get());
 
                 let probe = if let Some(path) = pkg_config_path {
-                    Library::wrap_pkg_config_dir(path, || config.probe(lib_name))
+                    Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(lib_name))
                         .map(|lib| (lib_name, lib))
                 } else {
                     Self::probe_with_fallback(config, lib_name, fallback_lib_names)
                 };
+
+                //for name in &self.extra_libs {
+                //    let lib = if let Some(path) = &pkg_config_path {
+                //        Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(name))
+                //    } else {
+                //        config.probe(name)
+                //    }?;
+                //    libraries.add(name, Library::from_pkg_config(name, lib));
+                //}
 
                 match probe {
                     Ok((lib_name, lib)) => Library::from_pkg_config(lib_name, lib),
@@ -1167,21 +1212,15 @@ impl Library {
         f: F,
     ) -> Result<pkg_config::Library, pkg_config::Error>
     where
-        P: AsRef<Path>,
+        P: Iterator<Item = PathBuf>,
         F: FnOnce() -> Result<pkg_config::Library, pkg_config::Error>,
     {
         // save current PKG_CONFIG_PATH, so we can restore it
         let old = env::var("PKG_CONFIG_PATH");
+        let old_paths = old.iter().flat_map(env::split_paths);
 
-        match old {
-            Ok(ref s) => {
-                let mut paths = env::split_paths(s).collect::<Vec<_>>();
-                paths.push(PathBuf::from(pkg_config_dir.as_ref()));
-                let paths = env::join_paths(paths).unwrap();
-                env::set_var("PKG_CONFIG_PATH", paths)
-            }
-            Err(_) => env::set_var("PKG_CONFIG_PATH", pkg_config_dir.as_ref()),
-        }
+        let paths = env::join_paths(pkg_config_dir.chain(old_paths)).unwrap();
+        env::set_var("PKG_CONFIG_PATH", paths);
 
         let res = f();
 
@@ -1220,14 +1259,17 @@ impl Library {
     where
         P: AsRef<Path>,
     {
-        let pkg_lib = Self::wrap_pkg_config_dir(pkg_config_dir, || {
-            pkg_config::Config::new()
-                .atleast_version(version)
-                .print_system_libs(false)
-                .cargo_metadata(false)
-                .statik(true)
-                .probe(lib)
-        })?;
+        let pkg_lib = Self::wrap_pkg_config_dir(
+            vec![PathBuf::from(pkg_config_dir.as_ref())].into_iter(),
+            || {
+                pkg_config::Config::new()
+                    .atleast_version(version)
+                    .print_system_libs(false)
+                    .cargo_metadata(false)
+                    .statik(true)
+                    .probe(lib)
+            },
+        )?;
 
         let mut lib = Self::from_pkg_config(lib, pkg_lib);
         lib.statik = StaticLinking::Always;
