@@ -451,8 +451,6 @@ impl Dependencies {
         let mut flags = BuildFlags::new();
         let mut include_paths = Vec::new();
 
-        println!("cargo:warning=linking");
-
         //for (name, lib) in self.iter() {
         //    if lib.source == Source::EnvVariables
         //        && lib.libs.is_empty()
@@ -529,7 +527,7 @@ impl Dependencies {
             EnvVariable::set_rerun_if_changed_for_all_variants(&mut flags, name);
         }
 
-        println!("cargo:warning=finished linking");
+        println!("cargo:warning=FLAGS {:?}", flags);
 
         Ok(flags)
     }
@@ -764,9 +762,8 @@ impl Config {
     }
 
     /// TODO
-    pub fn extra_libs(mut self, libs: &[&str]) -> Self {
-        println!("cargo:warning=adding extra libs");
-        self.extra_libs.extend(libs.iter().map(|s| s.to_string()));
+    pub fn extra_libs(mut self, libs: Vec<String>) -> Self {
+        self.extra_libs.extend(libs);
         self
     }
 
@@ -896,23 +893,14 @@ impl Config {
                     .range_version(metadata::parse_version(version))
                     .statik(statik.get());
 
-                let probe = if let Some(path) = pkg_config_path {
+                let probe = if let Some(path) = &pkg_config_path {
                     Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(lib_name))
                         .map(|lib| (lib_name, lib))
                 } else {
-                    Self::probe_with_fallback(config, lib_name, fallback_lib_names)
+                    Self::probe_with_fallback(&config, lib_name, fallback_lib_names)
                 };
 
-                //for name in &self.extra_libs {
-                //    let lib = if let Some(path) = &pkg_config_path {
-                //        Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(name))
-                //    } else {
-                //        config.probe(name)
-                //    }?;
-                //    libraries.add(name, Library::from_pkg_config(name, lib));
-                //}
-
-                match probe {
+                let lib = match probe {
                     Ok((lib_name, lib)) => Library::from_pkg_config(lib_name, lib),
                     Err(e) => {
                         if build_internal == BuildInternal::Auto {
@@ -925,7 +913,18 @@ impl Config {
                             return Err(e.into());
                         }
                     }
+                };
+
+                for name in &self.extra_libs {
+                    let lib = if let Some(path) = &pkg_config_path {
+                        Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(name))
+                    } else {
+                        config.probe(name)
+                    }?;
+                    libraries.add(name, Library::from_pkg_config(name, lib));
                 }
+
+                lib
             };
 
             library.statik = statik;
@@ -936,7 +935,7 @@ impl Config {
     }
 
     fn probe_with_fallback<'a>(
-        config: pkg_config::Config,
+        config: &'a pkg_config::Config,
         name: &'a str,
         fallback_names: &'a [String],
     ) -> Result<(&'a str, pkg_config::Library), pkg_config::Error> {
