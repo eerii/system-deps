@@ -360,6 +360,23 @@ impl Dependencies {
         v
     }
 
+    /// Returns a vector of [Library::libs] of each library and if they are linked statically, removing duplicates.
+    pub fn all_libs_with_static(&self) -> Vec<(&str, bool)> {
+        let mut v = self
+            .libs
+            .values()
+            .flat_map(|l| {
+                let statik = l.statik.get();
+                l.libs
+                    .iter()
+                    .map(move |lib| (lib.name.as_str(), statik && lib.is_static_available))
+            })
+            .collect::<Vec<_>>();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     /// Returns a vector of [Library::link_paths] of each library, removing duplicates.
     pub fn all_link_paths(&self) -> Vec<&PathBuf> {
         self.aggregate_path_buf(|l| &l.link_paths)
@@ -451,60 +468,62 @@ impl Dependencies {
         let mut flags = BuildFlags::new();
         let mut include_paths = Vec::new();
 
-        //for (name, lib) in self.iter() {
-        //    if lib.source == Source::EnvVariables
-        //        && lib.libs.is_empty()
-        //        && lib.frameworks.is_empty()
-        //    {
-        //        return Err(Error::MissingLib(name.to_string()));
-        //    }
-        //}
-        //include_paths = self.all_include_paths();
-        //self.all_link_paths()
-        //    .into_iter()
-        //    .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
-        //self.all_framework_paths()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string())));
-        //self.all_libs_with_static()
-        //    .into_iter()
-        //    .for_each(|(l, s)| flags.add(BuildFlag::Lib(l.to_string(), s)));
-        //self.all_frameworks()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::LibFramework(f.to_string())));
-        //self.all_linker_args()
-        //    .into_iter()
-        //    .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())));
+        // TODO: Add option for toggling this
 
         for (name, lib) in self.iter() {
-            include_paths.extend(lib.include_paths.clone());
-
             if lib.source == Source::EnvVariables
                 && lib.libs.is_empty()
                 && lib.frameworks.is_empty()
             {
                 return Err(Error::MissingLib(name.to_string()));
             }
-
-            lib.link_paths
-                .iter()
-                .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
-            lib.framework_paths.iter().for_each(|f| {
-                flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string()))
-            });
-            lib.libs.iter().for_each(|l| {
-                flags.add(BuildFlag::Lib(
-                    l.name.clone(),
-                    lib.statik.get() && l.is_static_available,
-                ))
-            });
-            lib.frameworks
-                .iter()
-                .for_each(|f| flags.add(BuildFlag::LibFramework(f.clone())));
-            lib.ld_args
-                .iter()
-                .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())))
         }
+        include_paths = self.all_include_paths();
+        self.all_link_paths()
+            .into_iter()
+            .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
+        self.all_framework_paths()
+            .into_iter()
+            .for_each(|f| flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string())));
+        self.all_libs_with_static()
+            .into_iter()
+            .for_each(|(l, s)| flags.add(BuildFlag::Lib(l.to_string(), s)));
+        self.all_frameworks()
+            .into_iter()
+            .for_each(|f| flags.add(BuildFlag::LibFramework(f.to_string())));
+        self.all_linker_args()
+            .into_iter()
+            .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())));
+
+        //for (name, lib) in self.iter() {
+        //    include_paths.extend(lib.include_paths.clone());
+        //
+        //    if lib.source == Source::EnvVariables
+        //        && lib.libs.is_empty()
+        //        && lib.frameworks.is_empty()
+        //    {
+        //        return Err(Error::MissingLib(name.to_string()));
+        //    }
+        //
+        //    lib.link_paths
+        //        .iter()
+        //        .for_each(|l| flags.add(BuildFlag::SearchNative(l.to_string_lossy().to_string())));
+        //    lib.framework_paths.iter().for_each(|f| {
+        //        flags.add(BuildFlag::SearchFramework(f.to_string_lossy().to_string()))
+        //    });
+        //    lib.libs.iter().for_each(|l| {
+        //        flags.add(BuildFlag::Lib(
+        //            l.name.clone(),
+        //            lib.statik.get() && l.is_static_available,
+        //        ))
+        //    });
+        //    lib.frameworks
+        //        .iter()
+        //        .for_each(|f| flags.add(BuildFlag::LibFramework(f.clone())));
+        //    lib.ld_args
+        //        .iter()
+        //        .for_each(|f| flags.add(BuildFlag::LinkArg(f.clone())))
+        //}
 
         // Export DEP_$CRATE_INCLUDE env variable with the headers paths,
         // see https://kornel.ski/rust-sys-crate#headers
@@ -526,8 +545,6 @@ impl Dependencies {
         for (name, _lib) in self.libs.iter() {
             EnvVariable::set_rerun_if_changed_for_all_variants(&mut flags, name);
         }
-
-        println!("cargo:warning=FLAGS {:?}", flags);
 
         Ok(flags)
     }
@@ -915,13 +932,22 @@ impl Config {
                     }
                 };
 
+                // TODO: Could we also check if Libs.private are valid? This may be an issue in cerbero
+                // TODO: Pkg config ordering
+                // TODO: Should everything be linked statically
                 for name in &self.extra_libs {
                     let lib = if let Some(path) = &pkg_config_path {
                         Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(name))
                     } else {
                         config.probe(name)
-                    }?;
-                    libraries.add(name, Library::from_pkg_config(name, lib));
+                    };
+
+                    match lib {
+                        Ok(lib) => libraries.add(name, Library::from_pkg_config(name, lib)),
+                        Err(e) => {
+                            println!("cargo:warning=Couldn't use extra library {} - {}", name, e)
+                        }
+                    };
                 }
 
                 lib
