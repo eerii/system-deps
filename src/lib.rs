@@ -784,8 +784,8 @@ impl Config {
     ///
     /// # Arguments
     /// * `libs`: a list of library names to link.
-    pub fn extra_libs(mut self, libs: Vec<String>) -> Self {
-        self.extra_libs.extend(libs);
+    pub fn extra_libs<T: AsRef<str>>(mut self, libs: impl Iterator<Item = T>) -> Self {
+        self.extra_libs.extend(libs.map(|s| s.as_ref().into()));
         self
     }
 
@@ -948,7 +948,9 @@ impl Config {
 
                     match lib {
                         Ok(lib) => {
-                            libraries.add(extra_name, Library::from_pkg_config(extra_name, lib))
+                            let mut lib = Library::from_pkg_config(extra_name, lib);
+                            lib.statik = statik;
+                            libraries.add(extra_name, lib)
                         }
                         Err(_) => println!(
                             "cargo:warning=Extra library for '{}' is not available: '{}'",
@@ -1100,7 +1102,7 @@ pub enum Source {
     EnvVariables,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 /// Should the library be statically linked
 pub enum StaticLinking {
     /// Always try to link statically. This is the default for internally build libraries.
