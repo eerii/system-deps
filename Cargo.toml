@@ -18,10 +18,10 @@ keywords = [
 edition = "2018"
 documentation = "https://docs.rs/system-deps/"
 readme = "README.md"
+links = "system-deps"
 
 [dependencies]
 pkg-config = "0.3.25"
-system-deps-env = { path = "./env" }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 version-compare = "0.2"
 heck = "0.5"
@@ -33,18 +33,13 @@ itertools = "0.13"
 assert_matches = "1.5"
 
 [build-dependencies]
-system-deps-env = { path = "./env", optional = true }
-toml = { version = "0.8", default-features = false, features = ["parse"], optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
-reqwest = { version = "0.12", features = ["blocking"], optional = true }
-flate2 = { version = "1.0", optional = true }
-xz = { version = "0.1", optional = true }
-tar = { version = "0.4", optional = true }
-zip = { version = "2.2", optional = true }
+system-deps-meta = { path = "./meta", optional = true }
+system-deps-binary = { path = "./binary", optional = true }
 
 [features]
 clean_linker = []
-binary = [ "dep:system-deps-env", "dep:toml", "dep:serde", "dep:reqwest" ]
-gz = [ "dep:flate2", "dep:tar" ]
-xz = [ "dep:xz", "dep:tar" ]
-zip = [ "dep:zip" ]
+build_meta = [ "dep:system-deps-meta" ]
+binary = [ "build_meta", "dep:system-deps-binary" ]
+gx = [ "system-deps-binary/gz" ]
+xz = [ "system-deps-binary/xz" ]
+zip = [ "system-deps-binary/zip" ]

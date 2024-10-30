@@ -1327,7 +1327,8 @@ trait EnvVariablesExt<T> {
 impl EnvVariablesExt<&str> for EnvVariables {
     fn get(&self, var: &str) -> Option<String> {
         match self {
-            EnvVariables::Environment => system_deps_env::get(var),
+            // TODO: Read env! set by build script
+            EnvVariables::Environment => env::var(var).ok(),
             #[cfg(test)]
             EnvVariables::Mock(vars) => vars.get(var).cloned(),
         }

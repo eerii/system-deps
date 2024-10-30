@@ -1,7 +1,0 @@
-[package]
-name = "system-deps-env"
-version = "0.1.0"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/gdesmott/system-deps"
-edition = "2018"
-links = "system-deps-env"

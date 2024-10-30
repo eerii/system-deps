@@ -335,6 +335,9 @@ impl MetaData {
 
                     dep.version_overrides.push(builder.build()?);
                 }
+                ("url", toml::Value::String(_)) => {}
+                ("checksum", toml::Value::String(_)) => {}
+                ("pkg_paths", toml::Value::Array(_)) => {}
                 _ => {
                     return Err(MetadataError::UnexpectedKey(
                         format!("{}.{}", p_key, name),
