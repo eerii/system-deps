@@ -31,3 +31,17 @@ system-deps-env = { path = "./env" }
 lazy_static = "1"
 itertools = "0.13"
 assert_matches = "1.5"
+
+[build-dependencies]
+system-deps-env = { path = "./env", optional = true }
+reqwest = { version = "0.12", features = ["blocking"], optional = true }
+flate2 = { version = "1.0", optional = true }
+xz = { version = "0.1", optional = true }
+tar = { version = "0.4", optional = true }
+
+[features]
+default = [ "binary", "xz" ] # TODO: Delete
+binary = [ "dep:system-deps-env", "dep:reqwest" ]
+gz = [ "dep:flate2", "dep:tar" ]
+xz = [ "dep:xz", "dep:tar" ]
+zip = [  ]
