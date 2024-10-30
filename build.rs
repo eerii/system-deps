@@ -7,7 +7,9 @@ mod build {
 
 #[cfg(feature = "binary")]
 mod build {
+    use serde::Deserialize;
     use std::{
+        collections::HashMap,
         env, fs, io,
         path::{Path, PathBuf},
     };
@@ -22,6 +24,24 @@ mod build {
         Zip,
     }
 
+    #[derive(Debug, Default, Deserialize)]
+    struct Binary {
+        url: String,
+        checksum: Option<String>,
+        pkg_paths: Option<Vec<String>>,
+    }
+
+    type BinaryList = HashMap<String, Binary>;
+
+    impl Binary {
+        fn from_url(url: String) -> Self {
+            Self {
+                url,
+                ..Default::default()
+            }
+        }
+    }
+
     const _: () = {
         let enabled_features = {
             cfg!(feature = "gz") as u32 + cfg!(feature = "xz") as u32 + cfg!(feature = "zip") as u32
@@ -31,57 +51,72 @@ mod build {
         }
     };
 
-    fn metadata_or_env(name: &str) -> Option<String> {
-        println!("cargo:warning=ENV {:?}", env::vars());
-        env::var(format!("SYSTEM_DEPS_{}", name))
-            .or(env::var(format!("DEP_SYSTEM_DEPS_ENV_{}", name)))
-            .or(env::var(name))
-            .ok()
+    fn metadata(name: &str) -> Option<String> {
+        println!("cargo:rerun-if-env-changed=DEP_SYSTEM_DEPS_ENV_{}", name);
+        env::var(format!("DEP_SYSTEM_DEPS_ENV_{}", name)).ok()
     }
 
     pub fn main() {
-        let out_dir = metadata_or_env("OUT_DIR").unwrap();
-        let mut out_path = PathBuf::from(out_dir);
-        out_path.push("binaries");
+        let out_dir = metadata("BINARY_DIR").unwrap_or(env::var("OUT_DIR").unwrap());
+        let binaries = metadata("BINARY_CONFIG")
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|config| toml::from_str(&config).ok())
+            .or(metadata("BINARY_URL")
+                .map(|url| BinaryList::from([("".into(), Binary::from_url(url))])))
+            .expect("When using the binary feature, you must either set 'SYSTEM_DEPS_BINARY_CONFIG' or 'SYSTEM_DEPS_BINARY_URL'");
+        println!("cargo:warning=BINARIES {:?}", binaries);
+        let mut paths = vec![];
 
-        let url = metadata_or_env("BINARY_URL").unwrap();
-        let checksum = metadata_or_env("BINARY_CHECKSUM");
+        for (name, bin) in binaries {
+            let mut dst = PathBuf::from(&out_dir);
+            if !name.is_empty() {
+                dst.push(name);
+            };
 
-        // Only download the binaries if there isn't already a valid copy
-        if !check_valid_dir(&out_path, checksum)
-            .expect("Error when checking the download directory")
-        {
-            download(&url, &out_path).expect("Error when getting binaries");
+            // Only download the binaries if there isn't already a valid copy
+            if !check_valid_dir(&dst, bin.checksum)
+                .expect("Error when checking the download directory")
+            {
+                download(&bin.url, &dst).expect("Error when getting binaries");
+            }
+
+            // Add pkg config paths to the overrides
+            if let Some(p) = bin.pkg_paths {
+                paths.extend(p.iter().map(|p| dst.join(p)));
+            }
+        }
+
+        if !paths.is_empty() {
+            let path = env::join_paths(&paths)
+                .expect("The binary directories contain invalid characters")
+                .into_string()
+                .unwrap();
+            println!("cargo:rustc-env=BINARY_PKG_CONFIG_PATH={}", path);
         }
     }
 
-    fn check_valid_dir(dir: &Path, checksum: Option<String>) -> io::Result<bool> {
+    fn check_valid_dir(dst: &Path, checksum: Option<String>) -> io::Result<bool> {
         // If it doesn't exist yet everything is ok
-        if !dir.try_exists()? {
+        if !dst.try_exists()? {
             return Ok(false);
         }
 
         // Raise an error if it is a file
-        if dir.is_file() {
+        if dst.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("The target directory is a file {:?}", dir),
+                format!("The target directory is a file {:?}", dst),
             ));
         }
 
-        // If the directory is empty, files need to be downloaded
-        let mut contents = dir.read_dir()?.peekable();
-        if contents.peek().is_none() {
-            return Ok(false);
-        }
-
-        // If a checksum is not specified, assume the directory is valid
+        // If a checksum is not specified, assume the directory is invalid
         let Some(checksum) = checksum else {
-            return Ok(true);
+            return Ok(false);
         };
 
         // Check if the checksum is valid
-        let valid = contents
+        let valid = dst
+            .read_dir()?
             .find(|f| f.as_ref().is_ok_and(|f| f.file_name() == "checksum"))
             .and_then(|s| s.ok())
             .and_then(|s| fs::read_to_string(s.path()).ok())
@@ -89,7 +124,7 @@ mod build {
             .is_some();
 
         // Update the checksum
-        let mut path = dir.to_path_buf();
+        let mut path = dst.to_path_buf();
         path.push("checksum");
         fs::write(path, checksum)?;
 
@@ -135,22 +170,26 @@ mod build {
     }
 
     fn decompress(file: &[u8], dst: &Path, ext: Extension) -> io::Result<()> {
-        let reader;
-        let mut archive = match ext {
+        match ext {
             #[cfg(feature = "gz")]
             Extension::TarGz => {
-                reader = flate2::read::GzDecoder::new(file);
-                tar::Archive::new(reader)
+                let reader = flate2::read::GzDecoder::new(file);
+                let mut archive = tar::Archive::new(reader);
+                archive.unpack(dst)?;
             }
             #[cfg(feature = "xz")]
             Extension::TarXz => {
-                reader = xz::read::XzDecoder::new(file);
-                tar::Archive::new(reader)
+                let reader = xz::read::XzDecoder::new(file);
+                let mut archive = tar::Archive::new(reader);
+                archive.unpack(dst)?;
             }
             #[cfg(feature = "zip")]
-            Extension::Zip => todo!(),
+            Extension::Zip => {
+                let reader = io::Cursor::new(file);
+                let mut archive = zip::ZipArchive::new(reader)?;
+                archive.extract(dst)?;
+            }
         };
-        archive.unpack(dst)?;
         Ok(())
     }
 }

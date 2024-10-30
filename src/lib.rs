@@ -212,7 +212,7 @@
 //!
 //! By default, system-deps will add all of the linking arguments from `pkg-config` in order for
 //! each separate library. If you are using a large number of libraries, this can result in errors
-//! because the linking line is too long. To aleviate this, the environment variable `SYSTEM_DEPS_CLEAN_LINKER`
+//! because the linking line is too long. To aleviate this, the feature `clean_linker`
 //! can be set, which will deduplicate all of the linking arguments. While a best effort
 //! is made to keep a correct ordering, this can't be guaranteed when using this option, so please
 //! take extra care to verify that the produced result is correct.
@@ -465,7 +465,7 @@ impl Dependencies {
         }
     }
 
-    fn gen_flags(&self, clean_linker: bool) -> Result<BuildFlags, Error> {
+    fn gen_flags(&self) -> Result<BuildFlags, Error> {
         let mut flags = BuildFlags::new();
         let mut include_paths = Vec::new();
 
@@ -478,7 +478,7 @@ impl Dependencies {
             }
         }
 
-        if clean_linker {
+        if cfg!(feature = "clean_linker") {
             include_paths.extend(self.all_include_paths());
             self.all_link_paths()
                 .into_iter()
@@ -535,7 +535,6 @@ impl Dependencies {
             EnvVariable::new_pkg_config_path(None),
         ));
         flags.add(BuildFlag::RerunIfEnvChanged(EnvVariable::new_link(None)));
-        flags.add(BuildFlag::RerunIfEnvChanged(EnvVariable::CleanLinker));
 
         for (name, _lib) in self.libs.iter() {
             EnvVariable::set_rerun_if_changed_for_all_variants(&mut flags, name);
@@ -603,7 +602,6 @@ enum EnvVariable {
     BuildInternal(Option<String>),
     Link(Option<String>),
     LinkerArgs(String),
-    CleanLinker,
 }
 
 impl EnvVariable {
@@ -659,7 +657,6 @@ impl EnvVariable {
             EnvVariable::BuildInternal(_) => "BUILD_INTERNAL",
             EnvVariable::Link(_) => "LINK",
             EnvVariable::LinkerArgs(_) => "LDFLAGS",
-            EnvVariable::CleanLinker => "CLEAN_LINKER",
         }
     }
 
@@ -698,8 +695,7 @@ impl fmt::Display for EnvVariable {
             }
             EnvVariable::BuildInternal(None)
             | EnvVariable::Link(None)
-            | EnvVariable::PkgConfigPath(None)
-            | EnvVariable::CleanLinker => self.suffix().to_string(),
+            | EnvVariable::PkgConfigPath(None) => self.suffix().to_string(),
         };
         write!(f, "SYSTEM_DEPS_{}", suffix)
     }
@@ -740,9 +736,8 @@ impl Config {
     ///
     /// The returned hash is using the `toml` key defining the dependency as key.
     pub fn probe(self) -> Result<Dependencies, Error> {
-        let clean_linker = self.env.get(&EnvVariable::CleanLinker).is_some();
         let libraries = self.probe_full()?;
-        let flags = libraries.gen_flags(clean_linker)?;
+        let flags = libraries.gen_flags()?;
 
         // Output cargo flags
         println!("{}", flags);
@@ -879,13 +874,21 @@ impl Config {
             let name = &dep.key;
             let build_internal = self.get_build_internal_status(name)?;
 
-            // is there an overrided pkg-config path for the library?
+            // Is there an overrided pkg-config path for the library?
             let pkg_config_path = self
                 .env
                 .get(&EnvVariable::new_pkg_config_path(Some(name)))
                 .or_else(|| self.env.get(&EnvVariable::new_pkg_config_path(None)));
+            let pkg_config_path = pkg_config_path.iter().flat_map(env::split_paths);
+            #[cfg(feature = "binary")]
+            let pkg_config_path = pkg_config_path.chain(
+                option_env!("BINARY_PKG_CONFIG_PATH")
+                    .iter()
+                    .flat_map(env::split_paths),
+            );
+            let pkg_config_path = pkg_config_path.collect::<Vec<_>>();
 
-            // should the lib be statically linked?
+            // Should the lib be statically linked?
             let statik = match self
                 .env
                 .get(&EnvVariable::new_link(Some(name)))
@@ -895,10 +898,10 @@ impl Config {
                 Some("static_release") => StaticLinking::Release,
                 Some(_) => StaticLinking::Always,
                 None => {
-                    if pkg_config_path.is_some() {
-                        StaticLinking::Always
-                    } else {
+                    if pkg_config_path.is_empty() {
                         StaticLinking::Never
+                    } else {
+                        StaticLinking::Always
                     }
                 }
             };
@@ -915,12 +918,9 @@ impl Config {
                     .range_version(metadata::parse_version(version))
                     .statik(statik.get());
 
-                let probe = if let Some(path) = &pkg_config_path {
-                    Library::wrap_pkg_config_dir(env::split_paths(&path), || config.probe(lib_name))
-                        .map(|lib| (lib_name, lib))
-                } else {
+                let probe = Library::wrap_pkg_config_dir(&pkg_config_path, || {
                     Self::probe_with_fallback(&config, lib_name, fallback_lib_names)
-                };
+                });
 
                 let lib = match probe {
                     Ok((lib_name, lib)) => Library::from_pkg_config(lib_name, lib),
@@ -938,15 +938,9 @@ impl Config {
                 };
 
                 for extra_name in &self.extra_libs {
-                    let lib = if let Some(path) = &pkg_config_path {
-                        Library::wrap_pkg_config_dir(env::split_paths(&path), || {
-                            config.probe(extra_name)
-                        })
-                    } else {
+                    match Library::wrap_pkg_config_dir(&pkg_config_path, || {
                         config.probe(extra_name)
-                    };
-
-                    match lib {
+                    }) {
                         Ok(lib) => {
                             let mut lib = Library::from_pkg_config(extra_name, lib);
                             lib.statik = statik;
@@ -1241,19 +1235,19 @@ impl Library {
         }
     }
 
-    fn wrap_pkg_config_dir<P, F>(
-        pkg_config_dir: P,
-        f: F,
-    ) -> Result<pkg_config::Library, pkg_config::Error>
+    fn wrap_pkg_config_dir<F, R>(pkg_config_dir: &[PathBuf], f: F) -> Result<R, pkg_config::Error>
     where
-        P: Iterator<Item = PathBuf>,
-        F: FnOnce() -> Result<pkg_config::Library, pkg_config::Error>,
+        F: FnOnce() -> Result<R, pkg_config::Error>,
     {
         // Save current PKG_CONFIG_PATH, so we can restore it
         let old = env::var("PKG_CONFIG_PATH");
-        let old_paths = old.iter().flat_map(env::split_paths);
+        let old_paths = old
+            .as_ref()
+            .map(env::split_paths)
+            .unwrap()
+            .collect::<Vec<_>>();
 
-        let paths = env::join_paths(pkg_config_dir.chain(old_paths)).unwrap();
+        let paths = env::join_paths(pkg_config_dir.iter().chain(old_paths.iter())).unwrap();
         env::set_var("PKG_CONFIG_PATH", paths);
 
         let res = f();
@@ -1293,17 +1287,14 @@ impl Library {
     where
         P: AsRef<Path>,
     {
-        let pkg_lib = Self::wrap_pkg_config_dir(
-            vec![PathBuf::from(pkg_config_dir.as_ref())].into_iter(),
-            || {
-                pkg_config::Config::new()
-                    .atleast_version(version)
-                    .print_system_libs(false)
-                    .cargo_metadata(false)
-                    .statik(true)
-                    .probe(lib)
-            },
-        )?;
+        let pkg_lib = Self::wrap_pkg_config_dir(&[PathBuf::from(pkg_config_dir.as_ref())], || {
+            pkg_config::Config::new()
+                .atleast_version(version)
+                .print_system_libs(false)
+                .cargo_metadata(false)
+                .statik(true)
+                .probe(lib)
+        })?;
 
         let mut lib = Self::from_pkg_config(lib, pkg_lib);
         lib.statik = StaticLinking::Always;

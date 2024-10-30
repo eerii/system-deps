@@ -53,7 +53,7 @@ fn toml(
     env: Vec<(&'static str, &'static str)>,
 ) -> Result<(Dependencies, BuildFlags), Error> {
     let libs = create_config(path, env).probe_full()?;
-    let flags = libs.gen_flags(false)?;
+    let flags = libs.gen_flags()?;
     Ok((libs, flags))
 }
 
@@ -109,7 +109,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 "#,
@@ -281,7 +280,6 @@ cargo:include=/usr/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_SEARCH_NATIVE
@@ -312,7 +310,6 @@ cargo:include=/usr/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_SEARCH_NATIVE
@@ -344,7 +341,6 @@ cargo:include=/usr/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TEST_LIB_SEARCH_NATIVE
@@ -442,7 +438,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 "#,
     );
 }
@@ -487,7 +482,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 "#,
     );
 }
@@ -539,7 +533,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 "#,
     );
 }
@@ -584,7 +577,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 "#,
     );
 }
@@ -629,7 +621,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 "#,
     );
 }
@@ -679,7 +670,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 ",
     );
 }
@@ -728,7 +718,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIB_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 ",
@@ -1107,7 +1096,6 @@ cargo:include=./src/tests/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_SEARCH_NATIVE
@@ -1182,7 +1170,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 ",
     );
 }
@@ -1207,7 +1194,6 @@ cargo:include=./src/tests/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTSTATICLIB_SEARCH_NATIVE
@@ -1254,7 +1240,6 @@ cargo:include=/usr/include/testlib
 cargo:rerun-if-env-changed=SYSTEM_DEPS_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LIB
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LIB_FRAMEWORK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_SEARCH_NATIVE
@@ -1325,7 +1310,6 @@ cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIBWITHRPATH_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_BUILD_INTERNAL
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTDATA_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_TESTLIBWITHRPATH_LINK
-cargo:rerun-if-env-changed=SYSTEM_DEPS_CLEAN_LINKER
 cargo:rerun-if-env-changed=SYSTEM_DEPS_LINK
 cargo:rerun-if-env-changed=SYSTEM_DEPS_PKG_CONFIG_PATH
 "#,
