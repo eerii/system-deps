@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
@@ -18,30 +18,74 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// Get the directory where cargo is being called
+/// Try to find the project root using locate-project
+fn find_with_cargo(dir: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new(env!("CARGO"))
+        .current_dir(dir)
+        .arg("locate-project")
+        .arg("--workspace")
+        .arg("--message-format=plain")
+        .output()
+        .ok()?
+        .stdout;
+    if out.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(std::str::from_utf8(&out).ok()?.trim()))
+}
+
+/// Try to find the project root finding the outmost Cargo.toml
+fn find_by_path(mut dir: PathBuf) -> Option<PathBuf> {
+    let mut best_match = None;
+    loop {
+        let Ok(read) = dir.read_dir() else {
+            break;
+        };
+        for entry in read {
+            let Ok(entry) = entry else { continue };
+            if entry.file_name() == "Cargo.toml" {
+                best_match = Some(entry.path());
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    best_match
+}
+
+/// Get the manifest from the project directory
 /// This is **not** the directory where system-deps was cloned
-fn root() -> PathBuf {
-    if let Some(root) = env("SYSTEM_DEPS_ROOT") {
+/// If the target directory is not a subfolder of the project this will not work
+pub fn root() -> PathBuf {
+    if let Some(root) = env("SYSTEM_DEPS_MANIFEST") {
         return PathBuf::from(&root);
     }
+
+    // This is a subdirectory of the target dir
     let mut dir = PathBuf::from(
         std::env::args()
             .next()
             .expect("There should be cargo arguments for determining the root"),
     );
-    while !dir.ends_with("target") {
-        if !dir.pop() {
-            panic!("Error determining the cargo root, you may need to specify it manually with 'SYSTEM_DEPS_ROOT'");
-        }
-    }
     dir.pop();
-    dir
+
+    // Try to find the project first with cargo
+    if let Some(dir) = find_with_cargo(&dir) {
+        return dir;
+    }
+
+    // If it doesn't work, try to find a Cargo.toml
+    find_by_path(dir).expect(
+        "Error determining the cargo root manifest.\n\
+                    Please set 'SYSTEM_DEPS_MANIFEST' to the path of your project's Cargo.toml",
+    )
 }
 
 /// Get the metadata from the root Cargo.toml
-pub fn metadata() -> Metadata {
+pub fn metadata(manifest: &Path) -> Metadata {
     MetadataCommand::new()
-        .manifest_path(root().join("Cargo.toml"))
+        .manifest_path(manifest)
         .exec()
         .unwrap()
 }

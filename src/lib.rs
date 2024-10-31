@@ -1455,3 +1455,15 @@ impl fmt::Display for ParseError {
         }
     }
 }
+
+#[allow(dead_code)]
+#[cfg(feature = "build_meta")]
+pub fn build_manifest() -> &'static str {
+    env!("BUILD_MANIFEST")
+}
+
+#[allow(dead_code)]
+#[cfg(feature = "binary")]
+pub fn build_target() -> &'static str {
+    env!("BUILD_TARGET")
+}

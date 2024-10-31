@@ -42,15 +42,14 @@ const _: () = {
 // TODO: Reload on cargo.toml change
 // TODO: Per package build config, adapt the env that we are passing
 
-pub fn build() -> Vec<PathBuf> {
+pub fn build(values: system_deps_meta::Values, target: PathBuf) -> Vec<PathBuf> {
     // Read metadata from the crate graph
-    let metadata = system_deps_meta::metadata();
-    let binaries = system_deps_meta::read(&metadata, "system-deps")
+    let binaries = values
         .into_iter()
         .filter_map(|(n, v)| Some((n, system_deps_meta::from_value(v).ok()?)))
         .collect();
     let config = Config {
-        out_dir: metadata.target_directory.clone().into(),
+        out_dir: target.into(),
         binaries,
     };
     let mut paths = vec![];
