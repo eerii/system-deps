@@ -137,3 +137,38 @@ pub fn read(metadata: &Metadata, key: &str) -> Map<String, Value> {
 
     res
 }
+
+pub fn export_metadata(values: &Map<String, Value>) {
+    let mut stack = values
+        .iter()
+        .map(|(k, v)| (k.clone(), v))
+        .collect::<VecDeque<_>>();
+    while let Some((key, value)) = stack.pop_front() {
+        if let Some(value) = value.as_object() {
+            stack.extend(
+                value
+                    .iter()
+                    .filter(|(k, _)| *k != "name" && *k != "version")
+                    .map(|(k, v)| (format!("{}_{}", key, k), v)),
+            );
+            continue;
+        };
+        let text = if let Some(value) = value.as_str() {
+            value.into()
+        } else if let Some(value) = value.as_array() {
+            value
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else if let Some(value) = value.as_number() {
+            value.to_string()
+        } else {
+            continue;
+        };
+        // Metadata
+        println!("cargo:{}={}", key.to_uppercase(), text);
+        // Env vars
+        println!("cargo:rustc-env={}={}", key.to_uppercase(), text);
+    }
+}

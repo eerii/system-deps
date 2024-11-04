@@ -1456,14 +1456,16 @@ impl fmt::Display for ParseError {
     }
 }
 
-#[allow(dead_code)]
 #[cfg(feature = "build_meta")]
+#[allow(dead_code)]
+/// Returns the path of the top level Cargo.toml manifest
 pub fn build_manifest() -> &'static str {
     env!("BUILD_MANIFEST")
 }
 
-#[allow(dead_code)]
 #[cfg(feature = "binary")]
+#[allow(dead_code)]
+/// Returns the target directory where binaries are stored
 pub fn build_target() -> &'static str {
-    env!("BUILD_TARGET")
+    env!("BUILD_BINARY_DIR")
 }
