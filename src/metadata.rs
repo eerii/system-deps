@@ -338,6 +338,7 @@ impl MetaData {
                 ("url", toml::Value::String(_)) => {}
                 ("checksum", toml::Value::String(_)) => {}
                 ("pkg_paths", toml::Value::Array(_)) => {}
+                ("metadata", toml::Value::Table(_)) => {}
                 _ => {
                     return Err(MetadataError::UnexpectedKey(
                         format!("{}.{}", p_key, name),

@@ -84,10 +84,30 @@ pub fn root() -> PathBuf {
 
 /// Get the metadata from the root Cargo.toml
 pub fn metadata(manifest: &Path) -> Metadata {
+    println!("cargo:rerun-if-changed={}", manifest.display());
     MetadataCommand::new()
         .manifest_path(manifest)
         .exec()
         .unwrap()
+}
+
+/// Inserts values from b into a only if they don't already exist
+fn merge(a: &mut Value, b: Value) {
+    match (a, b) {
+        (a @ &mut Value::Object(_), Value::Object(b)) => {
+            let a = a.as_object_mut().unwrap();
+            for (k, v) in b {
+                if let Some(e) = a.get_mut(&k) {
+                    if e.is_object() {
+                        merge(e, v);
+                    }
+                } else {
+                    a.insert(k, v);
+                }
+            }
+        }
+        (a, b) => *a = b,
+    }
 }
 
 /// Recursively read dependency manifests to find system-deps metadata
@@ -102,7 +122,6 @@ pub fn read(metadata: &Metadata, key: &str) -> Map<String, Value> {
         .workspace_metadata
         .as_object()
         .and_then(|meta| meta.get(key))
-        .and_then(|meta| meta.as_object())
         .cloned()
         .unwrap_or_default();
 
@@ -120,22 +139,15 @@ pub fn read(metadata: &Metadata, key: &str) -> Map<String, Value> {
             };
         }
 
-        let Some(meta) = pkg
-            .metadata
-            .as_object()
-            .and_then(|meta| meta.get(key))
-            .and_then(|meta| meta.as_object())
-        else {
+        let Some(meta) = pkg.metadata.as_object().and_then(|meta| meta.get(key)) else {
             continue;
         };
 
-        // Append the keys in this order to avoid overwriting the existing ones
-        let mut meta = meta.clone();
-        meta.append(&mut res);
-        let _ = std::mem::replace(&mut res, meta);
+        println!("cargo:rerun-if-changed={}", pkg.manifest_path);
+        merge(&mut res, meta.clone());
     }
 
-    res
+    res.as_object().cloned().unwrap_or_default()
 }
 
 pub fn export_metadata(values: &Map<String, Value>) {

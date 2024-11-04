@@ -15,14 +15,10 @@ pub fn meta() -> (system_deps_meta::Values, std::path::PathBuf) {
     let metadata = metadata(&root);
     println!("cargo:rustc-env=BUILD_MANIFEST={}", root.display());
 
-    let binary_dir = match std::env::var("SYSTEM_DEPS_BINARY_DIR") {
-        Ok(dir) => dir.into(),
-        Err(_) => {
-            let dir = std::env::var("OUT_DIR").unwrap();
-            println!("cargo:rustc-env=BUILD_BINARY_DIR={}", dir);
-            dir.into()
-        }
-    };
+    let binary_dir = std::env::var("SYSTEM_DEPS_BINARY_DIR")
+        .map(|dir| std::path::PathBuf::from(dir))
+        .unwrap_or(metadata.target_directory.clone().into());
+    println!("cargo:rustc-env=BUILD_BINARY_DIR={}", binary_dir.display());
 
     let values = read(&metadata, "system-deps");
     export_metadata(&values);
