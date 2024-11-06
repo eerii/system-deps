@@ -522,7 +522,7 @@ impl Dependencies {
         // Export DEP_$CRATE_INCLUDE env variable with the headers paths,
         // see https://kornel.ski/rust-sys-crate#headers
         if !include_paths.is_empty() {
-            if let Ok(paths) = std::env::join_paths(include_paths) {
+            if let Ok(paths) = env::join_paths(include_paths) {
                 flags.add(BuildFlag::Include(paths.to_string_lossy().to_string()));
             }
         }
@@ -1454,18 +1454,4 @@ impl fmt::Display for ParseError {
             Self::VariantNotFound(v) => write!(f, "Unknown variant: `{}`", v),
         }
     }
-}
-
-#[cfg(feature = "build_meta")]
-#[allow(dead_code)]
-/// Returns the path of the top level Cargo.toml manifest
-pub fn build_manifest() -> &'static str {
-    env!("BUILD_MANIFEST")
-}
-
-#[cfg(feature = "binary")]
-#[allow(dead_code)]
-/// Returns the target directory where binaries are stored
-pub fn build_target() -> &'static str {
-    env!("BUILD_BINARY_DIR")
 }

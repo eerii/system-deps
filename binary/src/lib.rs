@@ -23,12 +23,6 @@ struct Binary {
     pkg_paths: Option<Vec<String>>,
 }
 
-#[derive(Debug)]
-struct Config {
-    out_dir: PathBuf,
-    binaries: HashMap<String, Binary>,
-}
-
 /// Warn the user that one decompressing feature must be enabled
 const _: () = {
     let enabled_features = {
@@ -42,22 +36,24 @@ const _: () = {
 // TODO: Reload on cargo.toml change
 // TODO: Per package build config, adapt the env that we are passing
 
-pub fn build(values: system_deps_meta::Values, target: PathBuf) -> Vec<PathBuf> {
+pub fn build() -> Vec<PathBuf> {
+    let values = system_deps_meta::read_metadata("system-deps");
+
     // Read metadata from the crate graph
     let binaries = values
         .into_iter()
         .filter_map(|(n, v)| Some((n, system_deps_meta::from_value(v).ok()?)))
-        .collect();
-    let config = Config {
-        out_dir: target.into(),
-        binaries,
-    };
+        .collect::<HashMap<String, Binary>>();
     let mut paths = vec![];
 
-    println!("cargo:warning=BINARIES {:?}", config);
+    println!("cargo:warning=BINARIES {:?}", binaries);
+    println!(
+        "cargo:warning=TARGET DIR {}",
+        system_deps_meta::BUILD_TARGET_DIR
+    );
 
-    for (name, bin) in config.binaries {
-        let mut dst = PathBuf::from(&config.out_dir);
+    for (name, bin) in binaries {
+        let mut dst = PathBuf::from(&system_deps_meta::BUILD_TARGET_DIR);
         if !name.is_empty() {
             dst.push(name);
         };

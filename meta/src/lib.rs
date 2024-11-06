@@ -1,94 +1,30 @@
 use std::{
     collections::{HashSet, VecDeque},
-    path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
-use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
+use cargo_metadata::{DependencyKind, MetadataCommand};
 use serde_json::{Map, Value};
 
+pub use cargo_metadata::Metadata;
 pub use serde_json::from_value;
-
 pub type Values = Map<String, Value>;
 
-// TODO: Cache results
+/// Path to the top level Cargo.toml
+pub const BUILD_MANIFEST: &str = env!("BUILD_MANIFEST");
 
-/// Read an environment variable keeping track of its changes
-fn env(name: &str) -> Option<String> {
-    println!("cargo:rerun-if-env-changed={}", name);
-    std::env::var(name).ok()
-}
-
-/// Try to find the project root using locate-project
-fn find_with_cargo(dir: &Path) -> Option<PathBuf> {
-    let out = std::process::Command::new(env!("CARGO"))
-        .current_dir(dir)
-        .arg("locate-project")
-        .arg("--workspace")
-        .arg("--message-format=plain")
-        .output()
-        .ok()?
-        .stdout;
-    if out.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(std::str::from_utf8(&out).ok()?.trim()))
-}
-
-/// Try to find the project root finding the outmost Cargo.toml
-fn find_by_path(mut dir: PathBuf) -> Option<PathBuf> {
-    let mut best_match = None;
-    loop {
-        let Ok(read) = dir.read_dir() else {
-            break;
-        };
-        for entry in read {
-            let Ok(entry) = entry else { continue };
-            if entry.file_name() == "Cargo.toml" {
-                best_match = Some(entry.path());
-            }
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    best_match
-}
-
-/// Get the manifest from the project directory
-/// This is **not** the directory where system-deps was cloned
-/// If the target directory is not a subfolder of the project this will not work
-pub fn root() -> PathBuf {
-    if let Some(root) = env("SYSTEM_DEPS_MANIFEST") {
-        return PathBuf::from(&root);
-    }
-
-    // This is a subdirectory of the target dir
-    let mut dir = PathBuf::from(
-        std::env::args()
-            .next()
-            .expect("There should be cargo arguments for determining the root"),
-    );
-    dir.pop();
-
-    // Try to find the project first with cargo
-    if let Some(dir) = find_with_cargo(&dir) {
-        return dir;
-    }
-
-    // If it doesn't work, try to find a Cargo.toml
-    find_by_path(dir).expect(
-        "Error determining the cargo root manifest.\n\
-                    Please set 'SYSTEM_DEPS_MANIFEST' to the path of your project's Cargo.toml",
-    )
-}
+/// Directory where system-deps related build products will be stored
+pub const BUILD_TARGET_DIR: &str = env!("BUILD_TARGET_DIR");
 
 /// Get the metadata from the root Cargo.toml
-pub fn metadata(manifest: &Path) -> Metadata {
-    println!("cargo:rerun-if-changed={}", manifest.display());
-    MetadataCommand::new()
-        .manifest_path(manifest)
-        .exec()
-        .unwrap()
+fn metadata() -> &'static Metadata {
+    static CACHED: OnceLock<Metadata> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        MetadataCommand::new()
+            .manifest_path(BUILD_MANIFEST)
+            .exec()
+            .unwrap()
+    })
 }
 
 /// Inserts values from b into a only if they don't already exist
@@ -97,6 +33,8 @@ fn merge(a: &mut Value, b: Value) {
         (a @ &mut Value::Object(_), Value::Object(b)) => {
             let a = a.as_object_mut().unwrap();
             for (k, v) in b {
+                if k.starts_with("cfg") {}
+
                 if let Some(e) = a.get_mut(&k) {
                     if e.is_object() {
                         merge(e, v);
@@ -111,7 +49,9 @@ fn merge(a: &mut Value, b: Value) {
 }
 
 /// Recursively read dependency manifests to find system-deps metadata
-pub fn read(metadata: &Metadata, key: &str) -> Map<String, Value> {
+pub fn read_metadata(key: &str) -> Values {
+    let metadata = metadata();
+
     let mut packages = if let Some(root) = metadata.root_package() {
         VecDeque::from([root])
     } else {
@@ -148,39 +88,4 @@ pub fn read(metadata: &Metadata, key: &str) -> Map<String, Value> {
     }
 
     res.as_object().cloned().unwrap_or_default()
-}
-
-pub fn export_metadata(values: &Map<String, Value>) {
-    let mut stack = values
-        .iter()
-        .map(|(k, v)| (k.clone(), v))
-        .collect::<VecDeque<_>>();
-    while let Some((key, value)) = stack.pop_front() {
-        if let Some(value) = value.as_object() {
-            stack.extend(
-                value
-                    .iter()
-                    .filter(|(k, _)| *k != "name" && *k != "version")
-                    .map(|(k, v)| (format!("{}_{}", key, k), v)),
-            );
-            continue;
-        };
-        let text = if let Some(value) = value.as_str() {
-            value.into()
-        } else if let Some(value) = value.as_array() {
-            value
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        } else if let Some(value) = value.as_number() {
-            value.to_string()
-        } else {
-            continue;
-        };
-        // Metadata
-        println!("cargo:{}={}", key.to_uppercase(), text);
-        // Env vars
-        println!("cargo:rustc-env={}={}", key.to_uppercase(), text);
-    }
 }
