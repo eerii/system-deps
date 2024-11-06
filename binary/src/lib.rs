@@ -23,16 +23,6 @@ struct Binary {
     pkg_paths: Option<Vec<String>>,
 }
 
-/// Warn the user that one decompressing feature must be enabled
-const _: () = {
-    let enabled_features = {
-        cfg!(feature = "gz") as u32 + cfg!(feature = "xz") as u32 + cfg!(feature = "zip") as u32
-    };
-    if enabled_features == 0 {
-        panic!("You must enable at least one binary format feature ('gz', 'xz', 'zip')");
-    }
-};
-
 // TODO: Reload on cargo.toml change
 // TODO: Per package build config, adapt the env that we are passing
 
@@ -110,15 +100,42 @@ fn check_valid_dir(dst: &Path, checksum: Option<String>) -> io::Result<bool> {
 }
 
 fn download(url: &str, dst: &Path) -> io::Result<()> {
-    let ext = get_ext(url)?;
+    let ext = match url {
+        #[cfg(feature = "gz")]
+        u if u.ends_with(".tar.gz") => Ok(Extension::TarGz),
+        #[cfg(feature = "xz")]
+        u if u.ends_with(".tar.xz") => Ok(Extension::TarXz),
+        #[cfg(feature = "zip")]
+        u if u.ends_with(".zip") => Ok(Extension::Zip),
+        u => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Not suppported binary extension, {:?}", u.split(".").last()),
+        )),
+    };
 
     // Local file
     if let Some(file_path) = url.strip_prefix("file://") {
-        let file = fs::read(Path::new(file_path))?;
-        decompress(&file, dst, ext)?;
+        let path = Path::new(file_path);
+        match ext {
+            Ok(ext) => {
+                let file = fs::read(path)?;
+                decompress(&file, dst, ext)?;
+            }
+            Err(e) => {
+                if path.is_dir() {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(file_path, dst)?;
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(file_path, dst)?;
+                } else {
+                    return Err(e);
+                };
+            }
+        };
     }
     // Download
     else {
+        let ext = ext?;
         let file = reqwest::blocking::get(url)
             .and_then(|req| req.bytes())
             .map_err(|e| {
@@ -130,43 +147,28 @@ fn download(url: &str, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn get_ext(_url: &str) -> io::Result<Extension> {
-    Ok(match _url {
-        #[cfg(feature = "gz")]
-        u if u.ends_with(".tar.gz") => Extension::TarGz,
-        #[cfg(feature = "xz")]
-        u if u.ends_with(".tar.xz") => Extension::TarXz,
-        #[cfg(feature = "zip")]
-        u if u.ends_with(".zip") => Extension::Zip,
-        u => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Not suppported binary extension, {:?}", u.split(".").last()),
-            ));
-        }
-    })
-}
-
-fn decompress(file: &[u8], dst: &Path, ext: Extension) -> io::Result<()> {
+fn decompress(_file: &[u8], _dst: &Path, ext: Extension) -> io::Result<()> {
     match ext {
         #[cfg(feature = "gz")]
         Extension::TarGz => {
-            let reader = flate2::read::GzDecoder::new(file);
+            let reader = flate2::read::GzDecoder::new(_file);
             let mut archive = tar::Archive::new(reader);
-            archive.unpack(dst)?;
+            archive.unpack(_dst)?;
+            Ok(())
         }
         #[cfg(feature = "xz")]
         Extension::TarXz => {
-            let reader = xz::read::XzDecoder::new(file);
+            let reader = xz::read::XzDecoder::new(_file);
             let mut archive = tar::Archive::new(reader);
-            archive.unpack(dst)?;
+            archive.unpack(_dst)?;
+            Ok(())
         }
         #[cfg(feature = "zip")]
         Extension::Zip => {
-            let reader = io::Cursor::new(file);
+            let reader = io::Cursor::new(_file);
             let mut archive = zip::ZipArchive::new(reader)?;
-            archive.extract(dst)?;
+            archive.extract(_dst)?;
+            Ok(())
         }
-    };
-    Ok(())
+    }
 }
