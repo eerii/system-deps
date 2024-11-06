@@ -14,6 +14,9 @@ enum Extension {
     TarXz,
     #[cfg(feature = "zip")]
     Zip,
+    /// Untested
+    #[cfg(feature = "pkg")]
+    Pkg,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -107,9 +110,11 @@ fn download(url: &str, dst: &Path) -> io::Result<()> {
         u if u.ends_with(".tar.xz") => Ok(Extension::TarXz),
         #[cfg(feature = "zip")]
         u if u.ends_with(".zip") => Ok(Extension::Zip),
+        #[cfg(feature = "pkg")]
+        u if u.ends_with(".pkg") => Ok(Extension::Pkg),
         u => Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("Not suppported binary extension, {:?}", u.split(".").last()),
+            format!("Unsuppported binary extension, {:?}", u.split(".").last()),
         )),
     };
 
@@ -168,6 +173,25 @@ fn decompress(_file: &[u8], _dst: &Path, ext: Extension) -> io::Result<()> {
             let reader = io::Cursor::new(_file);
             let mut archive = zip::ZipArchive::new(reader)?;
             archive.extract(_dst)?;
+            Ok(())
+        }
+        #[cfg(feature = "pkg")]
+        Extension::Pkg => {
+            // TODO: Error handling
+            let reader = io::Cursor::new(_file);
+            let mut archive = apple_flat_package::PkgReader::new(reader).unwrap();
+            let pkgs = archive.component_packages().unwrap();
+            let mut cpio = pkgs.first().unwrap().payload_reader().unwrap().unwrap();
+            while let Some(next) = cpio.next() {
+                let entry = next.unwrap();
+                let mut file = Vec::new();
+                cpio.read_to_end(&mut file).unwrap();
+                if entry.file_size() != 0 {
+                    let dst = _dst.join(entry.name());
+                    fs::create_dir_all(dst.parent().unwrap())?;
+                    fs::write(&dst, file)?;
+                }
+            }
             Ok(())
         }
     }
