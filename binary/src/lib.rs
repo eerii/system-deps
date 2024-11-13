@@ -6,29 +6,51 @@ use std::{
 
 use serde::Deserialize;
 
+/// The extension of the binary archive.
+/// Support for different extensions is enabled using features.
 #[derive(Debug)]
 enum Extension {
+    /// A `.tar.gz` archive.
     #[cfg(feature = "gz")]
     TarGz,
+    /// A `.tar.xz` archive.
     #[cfg(feature = "xz")]
     TarXz,
+    /// A `.zip` archive.
     #[cfg(feature = "zip")]
     Zip,
-    /// Untested
+    /// Untested.
     #[cfg(feature = "pkg")]
     Pkg,
 }
 
+/// Represents one location from where to download library binaries.
 #[derive(Debug, Default, Deserialize)]
 struct Binary {
+    /// The url from which to download the archived binaries. It suppports:
+    ///
+    /// - Web urls, in the form `http[s]://website/archive.ext`.
+    ///   This must directly download an archive with a known `Extension`.
+    /// - Local files, in the form `file:///path/to/archive.ext`.
+    ///   Note that this is made of the url descriptor `file://`, and then an absolute path, that
+    ///   starts with `/`, so three total slashes are needed.
+    ///   The path can point at an archive with a known `Extension`, or to a folder containing the
+    ///   uncompressed binaries.
     url: String,
+    /// Optionally, a checksum of the downloaded archive. When set, it is used to correctly cache
+    /// the result. If this is not specified, it will still be cached by cargo, but redownloads
+    /// might happen more often. It has no effect if `url` is a local folder.
     checksum: Option<String>,
-    pkg_paths: Option<Vec<String>>,
+    /// A list of relative paths inside the binary archive that point to a folder containing
+    /// package config files. These directories will be prepended to the `PKG_CONFIG_PATH` when
+    /// compiling the affected libraries.
+    pkg_paths: Vec<String>,
 }
 
 // TODO: Reload on cargo.toml change
 // TODO: Per package build config, adapt the env that we are passing
 
+/// Reads metadata from the cargo manifests and the environment to build a list of urls from where
 pub fn build() -> Vec<PathBuf> {
     let values = system_deps_meta::read_metadata("system-deps");
 
@@ -58,9 +80,7 @@ pub fn build() -> Vec<PathBuf> {
         }
 
         // Add pkg config paths to the overrides
-        if let Some(p) = bin.pkg_paths {
-            paths.extend(p.iter().map(|p| dst.join(p)));
-        }
+        paths.extend(bin.pkg_paths.iter().map(|p| dst.join(p)));
     }
 
     paths
@@ -152,33 +172,34 @@ fn download(url: &str, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn decompress(_file: &[u8], _dst: &Path, ext: Extension) -> io::Result<()> {
+fn decompress(file: &[u8], dst: &Path, ext: Extension) -> io::Result<()> {
     match ext {
         #[cfg(feature = "gz")]
         Extension::TarGz => {
-            let reader = flate2::read::GzDecoder::new(_file);
+            let reader = flate2::read::GzDecoder::new(file);
             let mut archive = tar::Archive::new(reader);
-            archive.unpack(_dst)?;
+            archive.unpack(dst)?;
             Ok(())
         }
         #[cfg(feature = "xz")]
         Extension::TarXz => {
-            let reader = xz::read::XzDecoder::new(_file);
+            let reader = xz::read::XzDecoder::new(file);
             let mut archive = tar::Archive::new(reader);
-            archive.unpack(_dst)?;
+            archive.unpack(dst)?;
             Ok(())
         }
         #[cfg(feature = "zip")]
         Extension::Zip => {
-            let reader = io::Cursor::new(_file);
+            let reader = io::Cursor::new(file);
             let mut archive = zip::ZipArchive::new(reader)?;
-            archive.extract(_dst)?;
+            archive.extract(dst)?;
             Ok(())
         }
         #[cfg(feature = "pkg")]
         Extension::Pkg => {
+            // TODO: Test this with actual pkg files, do they have pc files inside?
             // TODO: Error handling
-            let reader = io::Cursor::new(_file);
+            let reader = io::Cursor::new(file);
             let mut archive = apple_flat_package::PkgReader::new(reader).unwrap();
             let pkgs = archive.component_packages().unwrap();
             let mut cpio = pkgs.first().unwrap().payload_reader().unwrap().unwrap();
@@ -187,7 +208,7 @@ fn decompress(_file: &[u8], _dst: &Path, ext: Extension) -> io::Result<()> {
                 let mut file = Vec::new();
                 cpio.read_to_end(&mut file).unwrap();
                 if entry.file_size() != 0 {
-                    let dst = _dst.join(entry.name());
+                    let dst = dst.join(entry.name());
                     fs::create_dir_all(dst.parent().unwrap())?;
                     fs::write(&dst, file)?;
                 }
